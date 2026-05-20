@@ -53,6 +53,54 @@
 
   <div id="modal-root"></div><div id="toast" class="toast"></div>
 
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
+  import {
+    getFirestore,
+    collection,
+    addDoc,
+    onSnapshot,
+    doc,
+    updateDoc,
+    enableIndexedDbPersistence
+  } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
+  import {
+    getAuth,
+    signInAnonymously
+  } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDoqC8F55sA5qhdBHXgo5bjwDqgfszejsw",
+    authDomain: "unis-inspection-portal.firebaseapp.com",
+    projectId: "unis-inspection-portal",
+    storageBucket: "unis-inspection-portal.firebasestorage.app",
+    messagingSenderId: "176815661810",
+    appId: "1:176815661810:web:0f447d9983a6a79897266b"
+  };
+
+  const firebaseApp = initializeApp(firebaseConfig);
+  const db = getFirestore(firebaseApp);
+  const auth = getAuth(firebaseApp);
+
+  enableIndexedDbPersistence(db).catch((err) => {
+    console.warn("Firestore offline persistence not enabled:", err.code || err.message);
+  });
+
+  window.firebaseDB = db;
+  window.firebaseFns = { collection, addDoc, onSnapshot, doc, updateDoc };
+  window.firebaseReady = signInAnonymously(auth)
+    .then(() => {
+      console.log("Firebase connected with anonymous authentication");
+      window.dispatchEvent(new Event("firebase-ready"));
+      return true;
+    })
+    .catch((err) => {
+      console.error("Firebase anonymous sign-in failed", err);
+      window.dispatchEvent(new Event("firebase-error"));
+      return false;
+    });
+</script>
+
 <script>
 const IB=["Trailer doors close and seal properly","Trailer floor in good condition (no holes, damage, etc.)","Roof and walls in good condition (no leaks or holes)","Trailer clean and free of odor/debris","No pests or contamination present","Trailer temperature within acceptable range (reefer)","No signs of product damage or leaks upon opening","Seal intact and matches paperwork","Trailer condition suitable for unloading","Pictures taken if any damages found"];
 const OB=["Trailer doors close and seal properly","Trailer floor in good condition (no holes, damage, etc.)","Roof and walls in good condition (no leaks or holes)","Trailer clean and free of odor/debris","No pests or contamination present","Lights and reflectors functional","Load properly secured (pallets, straps, etc.)","Pallets in good condition (not broken or leaning)","Seal applied and matches BOL","Temperature recorded (reefer trailers)"];
@@ -61,9 +109,41 @@ const PO=["Dash and control panel warning lights","Safety devices: horn, back al
 const TYPES={inbound:{label:'Inbound',items:IB},outbound:{label:'Outbound',items:OB},pit:{label:'PIT',items:[...PV,...PO]}};
 let user=null,tab='inbound',answers={},comments={},photos={},page=1,sort={field:'date',dir:-1};
 const $=id=>document.getElementById(id),today=()=>new Date().toISOString().slice(0,10),timeNow=()=>new Date().toTimeString().slice(0,5);
-function records(){try{return JSON.parse(localStorage.getItem('unis_inspections_v8')||'[]')}catch{return[]}} function save(list){localStorage.setItem('unis_inspections_v8',JSON.stringify(list))}
+let inspectionRecords = [];
+let unsubscribeInspections = null;
+
+function records(){
+  return inspectionRecords;
+}
+
+async function saveRecord(record){
+  await window.firebaseReady;
+  const { collection, addDoc } = window.firebaseFns;
+  record.createdAt = new Date().toISOString();
+  await addDoc(collection(window.firebaseDB, "inspections"), record);
+}
+
+async function startFirebaseSync(){
+  await window.firebaseReady;
+  if(unsubscribeInspections || !window.firebaseDB) return;
+  const { collection, onSnapshot } = window.firebaseFns;
+  unsubscribeInspections = onSnapshot(collection(window.firebaseDB, "inspections"), (snapshot) => {
+    inspectionRecords = snapshot.docs.map(d => ({ firebaseId: d.id, ...d.data() }))
+      .sort((a,b) => (b.submittedAt || b.createdAt || '').localeCompare(a.submittedAt || a.createdAt || ''));
+
+    if(user){
+      renderStats();
+      if(tab === 'records' || tab === 'review') renderRecords(tab === 'review');
+    }
+  }, (err) => {
+    console.error("Firestore sync error", err);
+    toast("Cloud sync issue. Check Firebase rules or connection.");
+  });
+}
+
+window.addEventListener("firebase-ready", startFirebaseSync);
 function toast(m){$('toast').textContent=m;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),2400)}
-function quickLogin(n,r){$('login-name').value=n;$('login-role').value=r;login()} function login(){let n=$('login-name').value.trim(); if(!n)return toast('Enter your name'); user={name:n,role:$('login-role').value,site:$('login-site').value||'Buena Park CA'}; $('login').classList.add('hidden');$('app').classList.remove('hidden');renderShell()} function logout(){user=null;$('app').classList.add('hidden');$('login').classList.remove('hidden')}
+function quickLogin(n,r){$('login-name').value=n;$('login-role').value=r;login()} function login(){let n=$('login-name').value.trim(); if(!n)return toast('Enter your name'); user={name:n,role:$('login-role').value,site:$('login-site').value||'Buena Park CA'}; $('login').classList.add('hidden');$('app').classList.remove('hidden');startFirebaseSync();renderShell()} function logout(){user=null;$('app').classList.add('hidden');$('login').classList.remove('hidden')}
 function renderShell(){ $('user-pill').textContent=`${user.name} · ${user.role} · ${user.site}`; const allTabs=['inbound','outbound','pit','records']; const visible=(user.role==='manager'||user.role==='admin')?[...allTabs,'review']:allTabs; $('tabs').innerHTML=visible.map(t=>`<button class="tab ${tab===t?'active':''}" onclick="go('${t}')">${t==='pit'?'PIT':t[0].toUpperCase()+t.slice(1)}</button>`).join(''); $('quick-buttons').innerHTML=['inbound','outbound','pit','records'].map(t=>`<button class="${tab===t?'active':''}" onclick="go('${t}')">${TYPES[t]?.label||'Records'}<small>${t==='records'?'Search, sort, review, export':'Open inspection form'}</small></button>`).join(''); renderStats(); renderMain()}
 function go(t){tab=t;answers={};comments={};photos={};page=1;renderShell()}
 function renderStats(){let r=records(),d=today(); $('stats').innerHTML=`<div class="stat"><b>${r.length}</b><span>Total</span></div><div class="stat"><b>${r.filter(x=>x.date===d).length}</b><span>Today</span></div><div class="stat"><b>${r.filter(x=>x.result==='fail').length}</b><span>Failures</span></div><div class="stat"><b>${r.filter(x=>x.review==='Pending').length}</b><span>Pending</span></div>`}
@@ -119,16 +199,39 @@ function renderChecks(type){let html='',isPit=type==='pit'; if(isPit){html+=`<di
 function checkRows(items,group){return `<div class="checklist">${items.map((it,i)=>{let k=`${group}-${i}`,v=answers[k]||'';return `<div class="row ${v}" id="row-${k}"><div class="row-top"><div class="num">${i+1}</div><div class="item">${it}</div><div class="btns"><button class="cbtn pass ${v==='pass'?'active':''}" onclick="setAns('${k}','pass')">Pass</button><button class="cbtn fail ${v==='fail'?'active':''}" onclick="setAns('${k}','fail')">Fail</button><button class="cbtn na ${v==='na'?'active':''}" onclick="setAns('${k}','na')">N/A</button></div></div>${v==='fail'?`<div class="fail-area"><textarea id="c-${k}" placeholder="Required: describe issue, location, and corrective action" oninput="comments['${k}']=this.value">${comments[k]||''}</textarea><label class="photo">📷 Add Photo<input type="file" accept="image/*" style="display:none" onchange="photos['${k}']=this.files[0]?.name;toast('Photo attached')"></label></div>`:''}</div>`}).join('')}</div>`}
 function setAns(k,v){answers[k]=v;renderChecks(tab)} function requiredKeys(type){return type==='pit'?[...PV.map((_,i)=>`v-${i}`),...PO.map((_,i)=>`o-${i}`)]:TYPES[type].items.map((_,i)=>`m-${i}`)}
 function updateProgress(type){let keys=requiredKeys(type),done=keys.filter(k=>answers[k]).length,p=Math.round(done/keys.length*100); $('ptext').textContent=`${done} of ${keys.length} items checked`; $('ppct').textContent=p+'%'; $('fill').style.width=p+'%'}
-function submitForm(type,status){let keys=requiredKeys(type),isPit=type==='pit',fail=keys.filter(k=>answers[k]==='fail'); if(status!=='draft'){ if(isPit&&(!$('f-operator').value||!$('f-unit').value||!$('f-equip').value))return toast('Complete operator, unit, and equipment type'); if(!isPit&&(!$('f-trailer').value||!$('f-carrier').value||!$('f-driver').value))return toast('Complete trailer, carrier, and driver'); if(keys.some(k=>!answers[k]))return toast('Mark every item Pass, Fail, or N/A'); if(fail.some(k=>!comments[k]?.trim()))return toast('Failed items require comments')}
- let r={id:type.toUpperCase()+'-'+Date.now(),type,status,date:$('f-date').value,time:$('f-time').value,customer:$('f-customer').value,associate:$('f-associate').value,manager:$('f-manager').value,answers:{...answers},comments:{...comments},photos:{...photos},result:status==='draft'?'draft':fail.length?'fail':'pass',review:status==='draft'?'Draft':fail.length?'Pending':'Auto Approved',submittedBy:user.name,submittedAt:new Date().toISOString(),site:user.site}; if(isPit){r.operator=$('f-operator').value;r.unit=$('f-unit').value;r.equipment=$('f-equip').value}else{r.trailer=$('f-trailer').value;r.carrier=$('f-carrier').value;r.driver=$('f-driver').value;r.seal=$('f-seal').value;r.bol=$('f-bol').value;r.temp=$('f-temp').value} save([r,...records()]);toast(r.result==='fail'?'Submitted — manager review required':'Inspection saved');go('records')}
-function filteredRecords(reviewOnly=false){let q=($('q')?.value||'').toLowerCase(),tf=$('tf')?.value||'',rf=$('rf')?.value||'',rv=$('rv')?.value||'',mf=$('mf')?.value||'',from=$('from')?.value||'',to=$('to')?.value||'';let list=records().filter(r=>{let s=[r.id,r.type,r.trailer,r.unit,r.carrier,r.driver,r.operator,r.customer,r.submittedBy,r.review,r.reviewedBy,r.manager,r.reviewNotes].filter(Boolean).join(' ').toLowerCase();let managerName=(r.reviewedBy||r.manager||'');return(!reviewOnly||r.review==='Pending')&&(!q||s.includes(q))&&(!tf||r.type===tf)&&(!rf||r.result===rf)&&(!rv||r.review===rv)&&(!mf||managerName===mf)&&(!from||r.date>=from)&&(!to||r.date<=to)});list.sort((a,b)=>{let getVal=(r)=>sort.field==='unit'?(r.trailer||r.unit):sort.field==='manager'?(r.reviewedBy||r.manager||''):r[sort.field];let av=getVal(a)||'',bv=getVal(b)||'';return av<bv?-sort.dir:av>bv?sort.dir:0});return list}
+async function submitForm(type,status){let keys=requiredKeys(type),isPit=type==='pit',fail=keys.filter(k=>answers[k]==='fail'); if(status!=='draft'){ if(isPit&&(!$('f-operator').value||!$('f-unit').value||!$('f-equip').value))return toast('Complete operator, unit, and equipment type'); if(!isPit&&(!$('f-trailer').value||!$('f-carrier').value||!$('f-driver').value))return toast('Complete trailer, carrier, and driver'); if(keys.some(k=>!answers[k]))return toast('Mark every item Pass, Fail, or N/A'); if(fail.some(k=>!comments[k]?.trim()))return toast('Failed items require comments')}
+ let r={id:type.toUpperCase()+'-'+Date.now(),type,status,date:$('f-date').value,time:$('f-time').value,customer:$('f-customer').value,bayArea:$('f-bayarea').value,associate:$('f-associate').value,manager:$('f-manager').value,answers:{...answers},comments:{...comments},photos:{...photos},result:status==='draft'?'draft':fail.length?'fail':'pass',review:status==='draft'?'Draft':fail.length?'Pending':'Auto Approved',submittedBy:user.name,submittedAt:new Date().toISOString(),site:user.site}; if(isPit){r.operator=$('f-operator').value;r.unit=$('f-unit').value;r.equipment=$('f-equip').value}else{r.trailer=$('f-trailer').value;r.carrier=$('f-carrier').value;r.driver=$('f-driver').value;r.seal=$('f-seal').value;r.bol=$('f-bol').value;r.temp=$('f-temp').value} try{await saveRecord(r);toast(r.result==='fail'?'Submitted — manager review required':'Inspection saved');go('records')}catch(err){console.error(err);toast('Could not save to cloud. Check Firebase connection/rules.')}}
+function filteredRecords(reviewOnly=false){let q=($('q')?.value||'').toLowerCase(),tf=$('tf')?.value||'',rf=$('rf')?.value||'',rv=$('rv')?.value||'',mf=$('mf')?.value||'',from=$('from')?.value||'',to=$('to')?.value||'';let list=records().filter(r=>{let s=[r.id,r.type,r.trailer,r.unit,r.carrier,r.driver,r.operator,r.customer,r.bayArea,r.submittedBy,r.review,r.reviewedBy,r.manager,r.reviewNotes].filter(Boolean).join(' ').toLowerCase();let managerName=(r.reviewedBy||r.manager||'');return(!reviewOnly||r.review==='Pending')&&(!q||s.includes(q))&&(!tf||r.type===tf)&&(!rf||r.result===rf)&&(!rv||r.review===rv)&&(!mf||managerName===mf)&&(!from||r.date>=from)&&(!to||r.date<=to)});list.sort((a,b)=>{let getVal=(r)=>sort.field==='unit'?(r.trailer||r.unit):sort.field==='manager'?(r.reviewedBy||r.manager||''):r[sort.field];let av=getVal(a)||'',bv=getVal(b)||'';return av<bv?-sort.dir:av>bv?sort.dir:0});return list}
 function renderRecords(reviewOnly=false){let managers=[...new Set(records().map(r=>r.reviewedBy||r.manager).filter(Boolean))].sort();$('main').innerHTML=`<div class="card card-pad"><h3>${reviewOnly?'Manager Review Queue':'Inspection Records'}</h3><div class="filters"><input id="q" class="input-light" placeholder="Search trailer, forklift, driver, carrier, approved by..." oninput="renderRecordTable(${reviewOnly})"><select id="tf" onchange="renderRecordTable(${reviewOnly})"><option value="">All Types</option><option value="inbound">Inbound</option><option value="outbound">Outbound</option><option value="pit">PIT</option></select><select id="rf" onchange="renderRecordTable(${reviewOnly})"><option value="">All Results</option><option value="pass">Pass</option><option value="fail">Fail</option><option value="draft">Draft</option></select><select id="rv" onchange="renderRecordTable(${reviewOnly})"><option value="">All Reviews</option><option>Pending</option><option>Approved</option><option>Rejected</option><option>Auto Approved</option><option>Draft</option></select><select id="mf" onchange="renderRecordTable(${reviewOnly})"><option value="">All Approved By / Managers</option>${managers.map(m=>`<option>${m}</option>`).join('')}</select><input id="from" type="date" onchange="renderRecordTable(${reviewOnly})"><input id="to" type="date" onchange="renderRecordTable(${reviewOnly})"><button class="primary" onclick="exportExcel(${reviewOnly})">Export Excel</button></div><div id="record-table"></div></div>`;renderRecordTable(reviewOnly)}
 function sortBy(f,reviewOnly){sort.field===f?sort.dir*=-1:(sort={field:f,dir:-1});renderRecordTable(reviewOnly)}
-function renderRecordTable(reviewOnly=false){let list=filteredRecords(reviewOnly),per=10,total=Math.max(1,Math.ceil(list.length/per)); if(page>total)page=total; let slice=list.slice((page-1)*per,page*per); $('record-table').innerHTML=slice.length?`<div style="display:grid;gap:14px">${slice.map(r=>`<div onclick="openRecord('${r.id}')" class="card" style="cursor:pointer;padding:18px 20px"><div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap"><div><div style="font-size:28px;font-weight:900;color:#0f172a">${r.trailer||r.unit||'Unknown Unit'}</div><div style="margin-top:8px;color:#64748b;font-weight:700">${r.date} @ ${r.time||''} · ${r.driver?'Driver':'Operator'}: ${r.driver||r.operator||'—'}</div><div style="margin-top:6px;color:#94a3b8;font-size:13px;font-weight:700">Submitted by ${r.submittedBy} · ${r.site||''}</div>${r.review==='Pending'?`<div style="margin-top:10px;color:#d97706;font-size:13px;font-weight:900">⏳ Pending review by manager</div>`:''}${r.reviewedBy?`<div style="margin-top:10px;color:#16a34a;font-size:13px;font-weight:900">✔ Approved / Reviewed by: ${r.reviewedBy}</div>`:''}</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge ${r.type}">${r.type}</span><span class="badge ${r.result}">${r.result}</span><span class="badge review">${r.review}</span>${r.reviewedBy?`<span class="badge pass">${r.reviewedBy}</span>`:''}</div></div></div>`).join('')}</div><div class="pager"><button onclick="page=Math.max(1,page-1);renderRecordTable(${reviewOnly})">Prev</button><span>Page ${page} of ${total}</span><button onclick="page=Math.min(${total},page+1);renderRecordTable(${reviewOnly})">Next</button></div>`:`<div class="empty">No records found.</div>`}
-function openRecord(id){let r=records().find(x=>x.id===id);if(!r)return;let items=r.type==='pit'?[...PV,...PO]:r.type==='inbound'?IB:OB;let keys=r.type==='pit'?[...PV.map((_,i)=>`v-${i}`),...PO.map((_,i)=>`o-${i}`)]:items.map((_,i)=>`m-${i}`);$('modal-root').innerHTML=`<div class="modal-backdrop" onclick="if(event.target.className==='modal-backdrop')closeModal()"><div class="modal"><div class="modal-head"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2 style="margin:0">${r.trailer||r.unit||r.id}</h2><span class="badge ${r.result}">${r.result}</span></div><button class="close" onclick="closeModal()">×</button></div>${(user.role==='manager'||user.role==='admin')&&r.review==='Pending'?`<div style="background:#fff8e7;border:1px solid #f5cf6a;border-radius:18px;padding:14px 14px 16px;margin:18px 0"><div style="font-size:13px;font-weight:900;color:#a16207;margin-bottom:12px">Pending your review</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><button class="primary approve" style="font-size:16px;font-weight:900" onclick="reviewRecord('${r.id}','Approved')">✔ Approve</button><button class="primary reject" style="font-size:16px;font-weight:900" onclick="reviewRecord('${r.id}','Rejected')">✘ Reject / Flag</button></div></div>`:''}<div class="detailgrid"><div class="detail"><small>Date</small><b>${r.date} ${r.time||''}</b></div><div class="detail"><small>Result</small><b>${r.result}</b></div><div class="detail"><small>Review</small><b>${r.review}</b></div><div class="detail"><small>Approved / Reviewed By</small><b>${r.reviewedBy||r.manager||'—'}</b></div><div class="detail"><small>Driver / Operator</small><b>${r.driver||r.operator||'—'}</b></div><div class="detail"><small>Carrier / Equipment</small><b>${r.carrier||r.equipment||'—'}</b></div><div class="detail"><small>Customer</small><b>${r.customer||'—'}</b></div></div>${keys.map((k,i)=>`<div class="modal-check"><span class="dot ${r.answers[k]||''}"></span><div style="flex:1"><b>${items[i]}</b>${r.comments[k]?`<div style="color:#9f1b1b;margin-top:4px">Comment: ${r.comments[k]}</div>`:''}${r.photos[k]?`<small>Photo: ${r.photos[k]}</small>`:''}</div><span class="badge ${r.answers[k]||'partial'}">${r.answers[k]||'—'}</span></div>`).join('')}${(user.role==='manager'||user.role==='admin')&&r.review==='Pending'?`<div class="input" style="margin-top:16px"><label>Manager Review Notes</label><textarea id="review-notes" rows="3" placeholder="Add review notes, corrective action, or reason for rejection...">${r.reviewNotes||''}</textarea></div><div class="review-actions"><button class="primary approve" onclick="reviewRecord('${r.id}','Approved')">Approve / Corrected</button><button class="primary reject" onclick="reviewRecord('${r.id}','Rejected')">Reject / Keep Open</button></div>`:r.reviewNotes?`<div class="detail" style="margin-top:16px"><small>Manager Notes</small><b>${r.reviewNotes}</b></div>`:''}</div></div>`}
-function closeModal(){$('modal-root').innerHTML=''} function reviewRecord(id,status){let notes=$('review-notes')?.value?.trim()||'';let list=records().map(r=>r.id===id?{...r,review:status,reviewNotes:notes,reviewedBy:user.name,reviewedAt:new Date().toISOString()}:r);save(list);toast('Review updated');closeModal();renderShell()}
-function exportExcel(reviewOnly=false){let list=filteredRecords(reviewOnly); if(!list.length)return toast('No records to export'); let summary=list.map(r=>({ID:r.id,Type:r.type,Date:r.date,Time:r.time,Customer:r.customer,Trailer_or_Unit:r.trailer||r.unit,Carrier:r.carrier,Driver_or_Operator:r.driver||r.operator,Equipment:r.equipment,Seal:r.seal,BOL:r.bol,Result:r.result,Review:r.review,Submitted_By:r.submittedBy,Approved_By:r.reviewedBy||'',Review_Notes:r.reviewNotes||'',Site:r.site})); if(window.XLSX){let wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summary),'Summary');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(expandRows(list,['inbound','outbound'])),'Trailer Inspections');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(expandRows(list,['pit'])),'PIT Inspections');XLSX.writeFile(wb,`UNIS_Inspections_${today()}.xlsx`)}else{let csv=Object.keys(summary[0]).join(',')+'\n'+summary.map(o=>Object.values(o).map(v=>`"${String(v||'').replaceAll('"','""')}"`).join(',')).join('\n');let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`UNIS_Inspections_${today()}.csv`;a.click()} }
-function expandRows(list,types){return list.filter(r=>types.includes(r.type)).map(r=>{let items=r.type==='pit'?[...PV,...PO]:r.type==='inbound'?IB:OB;let keys=r.type==='pit'?[...PV.map((_,i)=>`v-${i}`),...PO.map((_,i)=>`o-${i}`)]:items.map((_,i)=>`m-${i}`);let o={ID:r.id,Type:r.type,Date:r.date,Trailer_or_Unit:r.trailer||r.unit,Result:r.result,Review:r.review,Approved_By:r.reviewedBy||'',Review_Notes:r.reviewNotes||''};keys.forEach((k,i)=>{o[`${i+1}. ${items[i]}`]=r.answers[k]||''; if(r.comments[k])o[`${i+1}. Comment`]=r.comments[k]});return o})}
+function renderRecordTable(reviewOnly=false){let list=filteredRecords(reviewOnly),per=10,total=Math.max(1,Math.ceil(list.length/per)); if(page>total)page=total; let slice=list.slice((page-1)*per,page*per); $('record-table').innerHTML=slice.length?`<div style="display:grid;gap:14px">${slice.map(r=>`<div onclick="openRecord('${r.id}')" class="card" style="cursor:pointer;padding:18px 20px"><div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap"><div><div style="font-size:28px;font-weight:900;color:#0f172a">${r.trailer||r.unit||'Unknown Unit'}</div><div style="margin-top:8px;color:#64748b;font-weight:700">${r.date} @ ${r.time||''} · ${r.driver?'Driver':'Operator'}: ${r.driver||r.operator||'—'}</div><div style="margin-top:6px;color:#94a3b8;font-size:13px;font-weight:700">Submitted by ${r.submittedBy} · ${r.site||''}${r.bayArea?' · '+r.bayArea:''}</div>${r.review==='Pending'?`<div style="margin-top:10px;color:#d97706;font-size:13px;font-weight:900">⏳ Pending review by manager</div>`:''}${r.reviewedBy?`<div style="margin-top:10px;color:#16a34a;font-size:13px;font-weight:900">✔ Approved / Reviewed by: ${r.reviewedBy}</div>`:''}</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge ${r.type}">${r.type}</span><span class="badge ${r.result}">${r.result}</span><span class="badge review">${r.review}</span>${r.reviewedBy?`<span class="badge pass">${r.reviewedBy}</span>`:''}</div></div></div>`).join('')}</div><div class="pager"><button onclick="page=Math.max(1,page-1);renderRecordTable(${reviewOnly})">Prev</button><span>Page ${page} of ${total}</span><button onclick="page=Math.min(${total},page+1);renderRecordTable(${reviewOnly})">Next</button></div>`:`<div class="empty">No records found.</div>`}
+function openRecord(id){let r=records().find(x=>x.id===id);if(!r)return;let items=r.type==='pit'?[...PV,...PO]:r.type==='inbound'?IB:OB;let keys=r.type==='pit'?[...PV.map((_,i)=>`v-${i}`),...PO.map((_,i)=>`o-${i}`)]:items.map((_,i)=>`m-${i}`);$('modal-root').innerHTML=`<div class="modal-backdrop" onclick="if(event.target.className==='modal-backdrop')closeModal()"><div class="modal"><div class="modal-head"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2 style="margin:0">${r.trailer||r.unit||r.id}</h2><span class="badge ${r.result}">${r.result}</span></div><button class="close" onclick="closeModal()">×</button></div>${(user.role==='manager'||user.role==='admin')&&r.review==='Pending'?`<div style="background:#fff8e7;border:1px solid #f5cf6a;border-radius:18px;padding:14px 14px 16px;margin:18px 0"><div style="font-size:13px;font-weight:900;color:#a16207;margin-bottom:12px">Pending your review</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><button class="primary approve" style="font-size:16px;font-weight:900" onclick="reviewRecord('${r.id}','Approved')">✔ Approve</button><button class="primary reject" style="font-size:16px;font-weight:900" onclick="reviewRecord('${r.id}','Rejected')">✘ Reject / Flag</button></div></div>`:''}<div class="detailgrid"><div class="detail"><small>Date</small><b>${r.date} ${r.time||''}</b></div><div class="detail"><small>Result</small><b>${r.result}</b></div><div class="detail"><small>Review</small><b>${r.review}</b></div><div class="detail"><small>Approved / Reviewed By</small><b>${r.reviewedBy||r.manager||'—'}</b></div><div class="detail"><small>Driver / Operator</small><b>${r.driver||r.operator||'—'}</b></div><div class="detail"><small>Carrier / Equipment</small><b>${r.carrier||r.equipment||'—'}</b></div><div class="detail"><small>Customer</small><b>${r.customer||'—'}</b></div><div class="detail"><small>Bay Area</small><b>${r.bayArea||'—'}</b></div></div>${keys.map((k,i)=>`<div class="modal-check"><span class="dot ${r.answers[k]||''}"></span><div style="flex:1"><b>${items[i]}</b>${r.comments[k]?`<div style="color:#9f1b1b;margin-top:4px">Comment: ${r.comments[k]}</div>`:''}${r.photos[k]?`<small>Photo: ${r.photos[k]}</small>`:''}</div><span class="badge ${r.answers[k]||'partial'}">${r.answers[k]||'—'}</span></div>`).join('')}${(user.role==='manager'||user.role==='admin')&&r.review==='Pending'?`<div class="input" style="margin-top:16px"><label>Manager Review Notes</label><textarea id="review-notes" rows="3" placeholder="Add review notes, corrective action, or reason for rejection...">${r.reviewNotes||''}</textarea></div><div class="review-actions"><button class="primary approve" onclick="reviewRecord('${r.id}','Approved')">Approve / Corrected</button><button class="primary reject" onclick="reviewRecord('${r.id}','Rejected')">Reject / Keep Open</button></div>`:r.reviewNotes?`<div class="detail" style="margin-top:16px"><small>Manager Notes</small><b>${r.reviewNotes}</b></div>`:''}</div></div>`}
+function closeModal(){$('modal-root').innerHTML=''} async function reviewRecord(id,status){
+  let notes=$('review-notes')?.value?.trim()||'';
+  let record=records().find(r=>r.id===id);
+  if(!record || !record.firebaseId){
+    toast('Could not find this record in Firebase.');
+    return;
+  }
+  try{
+    const { doc, updateDoc } = window.firebaseFns;
+    await updateDoc(doc(window.firebaseDB, "inspections", record.firebaseId), {
+      review: status,
+      reviewNotes: notes,
+      reviewedBy: user.name,
+      reviewedAt: new Date().toISOString()
+    });
+    toast('Review updated');
+    closeModal();
+    renderShell();
+  }catch(err){
+    console.error(err);
+    toast('Could not update review. Check Firebase connection/rules.');
+  }
+}
+function exportExcel(reviewOnly=false){let list=filteredRecords(reviewOnly); if(!list.length)return toast('No records to export'); let summary=list.map(r=>({ID:r.id,Type:r.type,Date:r.date,Time:r.time,Customer:r.customer,Bay_Area:r.bayArea||'',Trailer_or_Unit:r.trailer||r.unit,Carrier:r.carrier,Driver_or_Operator:r.driver||r.operator,Equipment:r.equipment,Seal:r.seal,BOL:r.bol,Result:r.result,Review:r.review,Submitted_By:r.submittedBy,Approved_By:r.reviewedBy||'',Review_Notes:r.reviewNotes||'',Site:r.site})); if(window.XLSX){let wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summary),'Summary');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(expandRows(list,['inbound','outbound'])),'Trailer Inspections');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(expandRows(list,['pit'])),'PIT Inspections');XLSX.writeFile(wb,`UNIS_Inspections_${today()}.xlsx`)}else{let csv=Object.keys(summary[0]).join(',')+'\n'+summary.map(o=>Object.values(o).map(v=>`"${String(v||'').replaceAll('"','""')}"`).join(',')).join('\n');let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`UNIS_Inspections_${today()}.csv`;a.click()} }
+function expandRows(list,types){return list.filter(r=>types.includes(r.type)).map(r=>{let items=r.type==='pit'?[...PV,...PO]:r.type==='inbound'?IB:OB;let keys=r.type==='pit'?[...PV.map((_,i)=>`v-${i}`),...PO.map((_,i)=>`o-${i}`)]:items.map((_,i)=>`m-${i}`);let o={ID:r.id,Type:r.type,Date:r.date,Bay_Area:r.bayArea||'',Trailer_or_Unit:r.trailer||r.unit,Result:r.result,Review:r.review,Approved_By:r.reviewedBy||'',Review_Notes:r.reviewNotes||''};keys.forEach((k,i)=>{o[`${i+1}. ${items[i]}`]=r.answers[k]||''; if(r.comments[k])o[`${i+1}. Comment`]=r.comments[k]});return o})}
+</script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
