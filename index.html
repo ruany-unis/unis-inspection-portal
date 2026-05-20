@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>UNIS Digital Inspection Portal</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0f172a">
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
     :root{
@@ -127,6 +129,14 @@ function openRecord(id){let r=records().find(x=>x.id===id);if(!r)return;let item
 function closeModal(){$('modal-root').innerHTML=''} function reviewRecord(id,status){let notes=$('review-notes')?.value?.trim()||'';let list=records().map(r=>r.id===id?{...r,review:status,reviewNotes:notes,reviewedBy:user.name,reviewedAt:new Date().toISOString()}:r);save(list);toast('Review updated');closeModal();renderShell()}
 function exportExcel(reviewOnly=false){let list=filteredRecords(reviewOnly); if(!list.length)return toast('No records to export'); let summary=list.map(r=>({ID:r.id,Type:r.type,Date:r.date,Time:r.time,Customer:r.customer,Trailer_or_Unit:r.trailer||r.unit,Carrier:r.carrier,Driver_or_Operator:r.driver||r.operator,Equipment:r.equipment,Seal:r.seal,BOL:r.bol,Result:r.result,Review:r.review,Submitted_By:r.submittedBy,Approved_By:r.reviewedBy||'',Review_Notes:r.reviewNotes||'',Site:r.site})); if(window.XLSX){let wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summary),'Summary');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(expandRows(list,['inbound','outbound'])),'Trailer Inspections');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(expandRows(list,['pit'])),'PIT Inspections');XLSX.writeFile(wb,`UNIS_Inspections_${today()}.xlsx`)}else{let csv=Object.keys(summary[0]).join(',')+'\n'+summary.map(o=>Object.values(o).map(v=>`"${String(v||'').replaceAll('"','""')}"`).join(',')).join('\n');let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`UNIS_Inspections_${today()}.csv`;a.click()} }
 function expandRows(list,types){return list.filter(r=>types.includes(r.type)).map(r=>{let items=r.type==='pit'?[...PV,...PO]:r.type==='inbound'?IB:OB;let keys=r.type==='pit'?[...PV.map((_,i)=>`v-${i}`),...PO.map((_,i)=>`o-${i}`)]:items.map((_,i)=>`m-${i}`);let o={ID:r.id,Type:r.type,Date:r.date,Trailer_or_Unit:r.trailer||r.unit,Result:r.result,Review:r.review,Approved_By:r.reviewedBy||'',Review_Notes:r.reviewNotes||''};keys.forEach((k,i)=>{o[`${i+1}. ${items[i]}`]=r.answers[k]||''; if(r.comments[k])o[`${i+1}. Comment`]=r.comments[k]});return o})}
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js')
+      .then(reg => console.log('Service Worker registered'))
+      .catch(err => console.log('Service Worker failed', err));
+  });
+}
 </script>
 </body>
 </html>
